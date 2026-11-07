@@ -33,7 +33,12 @@ function Sync-Scoop {
         $olddir = "$currentdir\..\old"
 
         # get git scoop
-        Invoke-Git -ArgumentList @('clone', '-q', $configRepo, '--branch', $configBranch, '--single-branch', $newdir)
+        try {
+            Invoke-Git -ArgumentList @('clone', '-q', $configRepo, '--branch', $configBranch, '--single-branch', $newdir) -Timeout 100
+        } catch {
+            Remove-Item $newdir -Force -Recurse -ErrorAction SilentlyContinue
+            abort "Scoop clone timed out after 100s. Please check your network connection and try again."
+        }
 
         # check if scoop was successful downloaded
         if (!(Test-Path "$newdir\bin\scoop.ps1")) {
@@ -144,6 +149,7 @@ function Sync-Bucket {
     $removedFiles = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
     if ($PSVersionTable.PSVersion.Major -ge 7) {
         # Parallel parameter is available since PowerShell 7
+        $null = Get-Region
         $buckets | Where-Object { $_.valid } | ForEach-Object -ThrottleLimit 5 -Parallel {
             . "$using:PSScriptRoot\core.ps1"
             . "$using:PSScriptRoot\buckets.ps1"
@@ -153,6 +159,15 @@ function Sync-Bucket {
             $innerBucketLoc = Find-BucketDirectory $name
 
             $previousCommit = Invoke-Git -Path $bucketLoc -ArgumentList @('rev-parse', 'HEAD')
+            $currentRepo = Invoke-Git -Path $bucketLoc -ArgumentList @('config', 'remote.origin.url')
+            $httpProxy = Invoke-Git -Path $bucketLoc -ArgumentList @('config', 'http.proxy')
+            $httpsProxy = Invoke-Git -Path $bucketLoc -ArgumentList @('config', 'https.proxy')
+            if (-not $httpProxy -and -not $httpsProxy) {
+                $_u = url_replace $currentRepo
+                if ($_u -ne $currentRepo) {
+                    Invoke-Git -Path $bucketLoc -ArgumentList @('remote', 'set-url', 'origin', $_u)
+                }
+            }
             Invoke-Git -Path $bucketLoc -ArgumentList @('pull', '-q')
             if ($using:Log) {
                 Invoke-GitLog -Path $bucketLoc -Name $name -CommitHash $previousCommit
@@ -184,6 +199,15 @@ function Sync-Bucket {
             $innerBucketLoc = Find-BucketDirectory $name
 
             $previousCommit = Invoke-Git -Path $bucketLoc -ArgumentList @('rev-parse', 'HEAD')
+            $currentRepo = Invoke-Git -Path $bucketLoc -ArgumentList @('config', 'remote.origin.url')
+            $httpProxy = Invoke-Git -Path $bucketLoc -ArgumentList @('config', 'http.proxy')
+            $httpsProxy = Invoke-Git -Path $bucketLoc -ArgumentList @('config', 'https.proxy')
+            if (-not $httpProxy -and -not $httpsProxy) {
+                $_u = url_replace $currentRepo
+                if ($_u -ne $currentRepo) {
+                    Invoke-Git -Path $bucketLoc -ArgumentList @('remote', 'set-url', 'origin', $_u)
+                }
+            }
             Invoke-Git -Path $bucketLoc -ArgumentList @('pull', '-q')
             if ($Log) {
                 Invoke-GitLog -Path $bucketLoc -Name $name -CommitHash $previousCommit
@@ -274,6 +298,9 @@ function restore_app($ctx, $old_manifest, $old_version, $backup) {
         $original_dir = $ctx.dir
         try {
             $dir = link_current $ctx.dir
+            $install = install_info $ctx.app $old_version $ctx.global
+            $app = $ctx.app
+            $bucket = $install.bucket
             link_app $old_manifest $dir $original_dir $ctx.persist_dir $ctx.global $ctx.architecture
         } catch {
             warn "'$($ctx.app)' ($old_version) was restored, but its links could not be recreated: $($_.Exception.Message)"
